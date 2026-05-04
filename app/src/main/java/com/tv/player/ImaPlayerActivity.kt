@@ -1,6 +1,5 @@
 package com.tv.player
 
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.appcompat.app.AppCompatActivity
@@ -8,13 +7,12 @@ import com.google.ads.interactivemedia.v3.api.player.AdMediaInfo
 import com.google.ads.interactivemedia.v3.api.player.VideoAdPlayer
 import com.google.ads.interactivemedia.v3.api.player.VideoProgressUpdate
 import com.tv.core.base.TvPlayer
-import com.tv.core.util.mediaItems.MediaItem
-import com.tv.core.util.mediaItems.MediaQuality
 import com.tv.core.util.TvImaAdsLoader
 import com.tv.core.util.TvPlayerListener
+import com.tv.core.util.mediaItems.MediaItem
 import com.tv.core.util.mediaItems.MediaItemParent
+import com.tv.core.util.mediaItems.MediaLink
 import com.tv.player.databinding.ActivityImaPlayerBinding
-import com.tv.player.util.UrlHelper
 
 class ImaPlayerActivity : AppCompatActivity() {
 
@@ -76,7 +74,7 @@ class ImaPlayerActivity : AppCompatActivity() {
                 }
 
             })
-            .setLanguage("fr")
+            .setLanguage("fa")
             .create()
 
         playerHandler = TvPlayer.Builder(
@@ -86,55 +84,34 @@ class ImaPlayerActivity : AppCompatActivity() {
 
         val media1 =
             MediaItem(
-                qualities = listOf(
-                    MediaQuality(
+                links = listOf(
+                    MediaLink(
                         title = "media1",
-                        link = UrlHelper.film720,
-                        adTagUri = Uri.parse("https://play-dev.huma.ir/api/ads/2")
-                    )
-                )
-            )
-
-        val media2 =
-            MediaItem(
-                qualities = listOf(
-                    MediaQuality(
-                        title = "media2",
-                        link = UrlHelper.film480
-                    )
-                )
-            )
-
-        val media3 =
-            MediaItem(
-                qualities = listOf(
-                    MediaQuality(
-                        title = "media3",
-                        link = UrlHelper.film1080
+                        link = "https://dls7.iran-gamecenter-host.com/DonyayeSerial/movies/2010/tt1375666/SoftSub/Inception.2010.720p.BluRay.SoftSub.MkvCage.DonyayeSerial.mkv",
                     )
                 )
             )
 
         playerHandler.addListener(playerListener)
-        playerHandler.addMediaList(listOf(media1, media2, media3))
+        playerHandler.addMediaList(listOf(media1))
         playerHandler.prepareAndPlay()
 
     }
 
-    private val playerListener = object : TvPlayerListener{
-        override fun onMediaStartToPlay(mediaItem: MediaItemParent) {
-            super.onMediaStartToPlay(mediaItem)
-            Log.i(TAG , "onMediaStartToPlay")
+    private val playerListener = object : TvPlayerListener {
+        override fun onMediaStartToPlay(mediaItem: MediaItemParent, currentMediaItemIndex: Int) {
+            super.onMediaStartToPlay(mediaItem, currentMediaItemIndex)
+            Log.i(TAG, "onMediaStartToPlay")
         }
 
         override fun onMediaComplete(mediaItem: MediaItemParent) {
             super.onMediaComplete(mediaItem)
-            Log.i(TAG , "onMediaComplete")
+            Log.i(TAG, "onMediaComplete")
         }
 
         override fun onMediaListComplete(mediaItem: MediaItemParent) {
             super.onMediaListComplete(mediaItem)
-            Log.i(TAG , "onMediaListComplete")
+            Log.i(TAG, "onMediaListComplete")
         }
 
         override fun onControllerVisibilityChanged(visibility: Int) {

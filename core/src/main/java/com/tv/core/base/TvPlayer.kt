@@ -7,6 +7,7 @@ import android.widget.ArrayAdapter
 import android.widget.ListAdapter
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.lifecycleScope
 import com.google.android.exoplayer2.C
 import com.google.android.exoplayer2.ExoPlayer
 import com.google.android.exoplayer2.MediaItem
@@ -18,6 +19,7 @@ import com.google.android.exoplayer2.source.DefaultMediaSourceFactory
 import com.google.android.exoplayer2.source.MediaSource
 import com.google.android.exoplayer2.source.MergingMediaSource
 import com.google.android.exoplayer2.source.SingleSampleMediaSource
+import com.google.android.exoplayer2.source.TrackGroup
 import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
 import com.google.android.exoplayer2.trackselection.TrackSelectionOverride
 import com.google.android.exoplayer2.ui.StyledPlayerView
@@ -29,8 +31,10 @@ import com.tv.core.ui.TvAdvertisePlayerView
 import com.tv.core.ui.TvPlayerView
 import com.tv.core.util.AdvertisePlayerListener
 import com.tv.core.util.ExoPlayerHelper
+import com.tv.core.util.TVUserAction
 import com.tv.core.util.TvImaAdsLoader
 import com.tv.core.util.TvPlayBackException
+import com.tv.core.util.TvPlayerInteractionListener
 import com.tv.core.util.TvPlayerListener
 import com.tv.core.util.mediaItems.AdvertiseItem
 import com.tv.core.util.mediaItems.DubbedItem
@@ -40,8 +44,12 @@ import com.tv.core.util.mediaItems.MediaItemParent
 import com.tv.core.util.mediaItems.SubtitleConverter
 import com.tv.core.util.ui.AlertDialogHelper
 import com.tv.core.util.ui.AlertDialogItemView
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.util.Formatter
 import java.util.Locale
+import kotlin.math.min
 
 abstract class TvPlayer(
     val activity: AppCompatActivity,
@@ -60,9 +68,11 @@ abstract class TvPlayer(
 
     private var trackSelector: DefaultTrackSelector
     private var playerListener: Listener? = null
+    private var interactionListener: TvPlayerInteractionListener? = null
     var player: ExoPlayer
     private lateinit var mediaSourceFactory: MediaSource.Factory
     private var dataSourceFactory: DataSource.Factory
+    private var job: Job? = null
 
     val currentMediaItem: MediaItemParent
         get() {
@@ -70,10 +80,18 @@ abstract class TvPlayer(
         }
     val mediaItems = mutableListOf<MediaItemParent>()
 
+    val currentMediaItemIndex
+        get() = player.currentMediaItemIndex
+
+    val playbackState
+        get() = player.playbackState
+
     private var startToPlayMedia = false
 
     private val formatBuilder = StringBuilder()
     private val formatter = Formatter(formatBuilder, Locale.getDefault())
+
+    private var shouldNotifyCompletion = true
 
     init {
         setupElement(isLive)
@@ -113,7 +131,14 @@ abstract class TvPlayer(
 
     fun isAdPlaying() = player.isPlayingAd
 
-    fun getCurrentQuality() = currentMediaItem.currentQuality
+    fun getCurrentQuality() = currentMediaItem.currentLink
+
+    fun setContentVideoEnabled(enabled: Boolean) {
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !enabled)
+        )
+    }
 
     fun addListener(listener: TvPlayerListener) {
         //Remove last listener
@@ -126,7 +151,7 @@ abstract class TvPlayer(
                 listener.onPlayerError(
                     TvPlayBackException(
                         errorMessage = error.message, errorCode = error.errorCode
-                    )
+                    ), currentMediaItem, currentMediaItemIndex
                 )
                 startToPlayMedia = true
             }
@@ -135,31 +160,46 @@ abstract class TvPlayer(
                 super.onPlaybackStateChanged(playbackState)
                 if (playbackState == STATE_READY) {
                     if (startToPlayMedia && !isAdPlaying()) {
-                        listener.onMediaStartToPlay(currentMediaItem)
+                        listener.onMediaStartToPlay(currentMediaItem, currentMediaItemIndex)
                         startToPlayMedia = false
                     }
-                    tvPlayerView.changeSubtitleState(isThereSubtitle())
-                    tvPlayerView.changeQualityState(isThereQualities())
+                    tvPlayerView.changeSourceState(isThereSource())
+                    tvPlayerView.changeLinkState(isThereLink())
+                    tvPlayerView.changeQualityState(isThereQuality())
                     tvPlayerView.changeAudioTrackState(isThereDubbed())
+                    tvPlayerView.changeSubtitleState(isThereSubtitle())
                 } else if (playbackState == STATE_ENDED && !isAdPlaying()) {
-                    listener.onMediaListComplete(currentMediaItem)
+                    if (shouldNotifyCompletion) listener.onMediaListComplete(currentMediaItem)
+                    shouldNotifyCompletion = true
                     startToPlayMedia = true
                 }
                 tvPlayerView.changeEpisodeListState(isThereEpisodeMediaItem())
                 listener.onPlaybackStateChanged(playbackState)
+                handleCheckMediaFinish()
             }
 
             override fun onPositionDiscontinuity(
                 oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int
             ) {
                 super.onPositionDiscontinuity(oldPosition, newPosition, reason)
+                handleCheckMediaFinish()
+                val hasAd = newPosition.adGroupIndex >= 0
+                if (hasAd) {
+                    listener.onAdRollStarted(
+                        newPosition.adGroupIndex,
+                        newPosition.adIndexInAdGroup
+                    )
+                }
                 if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION && isRealMediaComplete(
                         oldPosition.positionMs
                     )
                 ) {
-                    listener.onMediaComplete(mediaItems[oldPosition.mediaItemIndex])
+                    if (!hasAd || newPosition.contentPositionMs == 0L)
+                        listener.onMediaComplete(mediaItems[oldPosition.mediaItemIndex])
                     startToPlayMedia = true
+
                 } else if (reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT && !isAdPlaying()) {
+                    listener.onMediaChange(mediaItems[oldPosition.mediaItemIndex])
                     startToPlayMedia = true
                 }
             }
@@ -176,6 +216,23 @@ abstract class TvPlayer(
             listener.onControllerVisibilityChanged(visibility)
         })
         player.addListener(requireNotNull(playerListener))
+    }
+
+    fun handleCheckMediaFinish() {
+        job?.cancel()
+        job = activity.lifecycleScope.launch {
+            val timeToFinish = (getDuration() - getCurrentPosition())
+            if (timeToFinish > 0) {
+                delay(timeToFinish)
+                if (player.hasNextMediaItem() && isPlaying()) {
+                    player.seekToNextMediaItem()
+                }
+            }
+        }
+    }
+
+    fun addInteractionListener(tvPlayerInteractionListener: TvPlayerInteractionListener) {
+        interactionListener = tvPlayerInteractionListener
     }
 
     private fun isRealMediaComplete(position: Long): Boolean {
@@ -195,27 +252,32 @@ abstract class TvPlayer(
         )
     }
 
+    fun updateMedia(index: Int, newMedia: MediaItemParent) {
+        shouldNotifyCompletion = false
+        mediaItems[index] = newMedia
+        player.removeMediaItem(index)
+        player.addMediaSource(index, buildMediaSource(newMedia, newMedia.dubbedList))
+    }
+
     fun isThereSubtitle(): Boolean {
         for (group in player.currentTracks.groups) {
             if (group.type == C.TRACK_TYPE_TEXT) {
-                return true
+                if (!group.mediaTrackGroup.getFormat(0).language.isNullOrEmpty()) return true
             }
         }
         return false
     }
 
-    fun isThereDubbed(): Boolean {
-        for (group in player.currentTracks.groups) {
-            if (group.type == C.TRACK_TYPE_AUDIO) {
-                return true
-            }
-        }
-        return false
-    }
+    fun isThereDubbed() = player.currentTracks.groups.count { it.type == C.TRACK_TYPE_AUDIO } > 1
+
+    fun isThereQuality() =
+        player.currentTracks.groups.count { it.type == C.TRACK_TYPE_VIDEO } > 0 && !isThereLink()
 
     fun isThereEpisodeMediaItem() = mediaItems.any { it is EpisodeMediaItem }
 
-    fun isThereQualities() = currentMediaItem.isThereQuality()
+    fun isThereLink() = currentMediaItem.currentLink?.link?.contains(".m3u8") == false
+
+    fun isThereSource() = currentMediaItem.isThereLink()
 
     private fun buildMediaSource(mediaItem: MediaItemParent, dubbedList: List<DubbedItem>) =
         MergingMediaSource(
@@ -280,6 +342,10 @@ abstract class TvPlayer(
         player.pause()
     }
 
+    fun updateNextButtonState(hasNext: Boolean) {
+        tvPlayerView.updateNextButtonState(hasNext)
+    }
+
     fun getCurrentPosition() = player.currentPosition
 
     fun getDuration() = player.duration
@@ -306,36 +372,42 @@ abstract class TvPlayer(
         player.seekTo(msSecond)
     }
 
+    fun seekToDefaultPosition() {
+        player.seekToDefaultPosition()
+    }
+
     fun changeMedia(index: Int, seekPosition: Long = 0L) {
         player.seekTo(index, seekPosition)
     }
 
     internal fun showSubtitle(
-        dialogTitle: String, dialogButtonText: String, resIdStyle: Int
+        dialogTitle: String,
+        dialogButtonText: String,
+        resIdStyle: Int,
+        subtitleLanguageDictionary: Map<String, String>
     ) {
-        val subtitleLanguageList = ArrayList<String>()
+        interactionListener?.onUserAction(TVUserAction.SHOW_SUBTITLE)
         val subtitlesList = ArrayList<AlertDialogItemView>()
-
-        player.currentTracks.groups.forEach { group ->
+        val subtitleTrackGroups = mutableListOf<TrackGroup>()
+        player.currentTracks.groups.forEachIndexed { _, group ->
             if (group.type == C.TRACK_TYPE_TEXT) {
                 val groupInfo = group.mediaTrackGroup
 
-                subtitleLanguageList.add(groupInfo.getFormat(0).language.toString())
-                val subtitleText =
-                    "${subtitlesList.size + 1}. " + Locale(groupInfo.getFormat(0).language.toString()).displayLanguage + " (${
-                        if (groupInfo.getFormat(0).label == null) "Subtitle" else groupInfo.getFormat(
-                            0
-                        ).label
-                    })"
-
-                val subtitleIcon = if (group.isSelected) R.drawable.tv_ic_check else 0
-                val subtitleCheckSupported = group.isSupported
-                subtitlesList.add(
-                    AlertDialogItemView(
-                        subtitleText, subtitleIcon, subtitleCheckSupported
-                    )
-                )
-
+                val language = groupInfo.getFormat(0).language
+                language?.let {
+                    subtitleTrackGroups.add(groupInfo)
+                    val subtitleText =
+                        subtitleLanguageDictionary[language.lowercase()] ?: language
+                    val subtitleIcon = if (group.isSelected) R.drawable.tv_ic_check else 0
+                    val subtitleCheckSupported = group.isSupported
+                    subtitleText.let {
+                        subtitlesList.add(
+                            AlertDialogItemView(
+                                subtitleText, subtitleIcon, subtitleCheckSupported
+                            )
+                        )
+                    }
+                }
             }
         }
 
@@ -343,7 +415,8 @@ abstract class TvPlayer(
         subtitleDialog.create(
             adapter = getAlertDialogAdapter(subtitlesList.toTypedArray()),
             itemClickListener = { _, position ->
-                selectSubtitle(position)
+                selectSubtitle(subtitleTrackGroups[position])
+                interactionListener?.onUserAction(TVUserAction.SELECT_SUBTITLE)
             },
             positiveClickListener = { self, _ ->
                 trackSelector.setParameters(
@@ -359,32 +432,23 @@ abstract class TvPlayer(
     }
 
     internal fun showAudioTrack(
-        dialogTitle: String, dialogButtonText: String, resIdStyle: Int
+        dialogTitle: String,
+        dialogButtonText: String,
+        resIdStyle: Int,
+        audioLanguageDictionary: Map<String, String>,
+        defaultAudio: String
     ) {
+        interactionListener?.onUserAction(TVUserAction.SHOW_AUDIO)
+
         val audioTrackLanguageList = ArrayList<String>()
         val audioTracksList = ArrayList<AlertDialogItemView>()
 
-        var softAudioTrackCounter = 0
-        val allAudioMediaSize =
-            player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }.size
-        val softAudioMediaSize = currentMediaItem.dubbedList.size
-        val hardAudioMediaSize = allAudioMediaSize - softAudioMediaSize
-
-        player.currentTracks.groups.forEachIndexed { index, group ->
+        player.currentTracks.groups.forEach { group ->
             if (group.type == C.TRACK_TYPE_AUDIO) {
                 val groupInfo = group.mediaTrackGroup
                 audioTrackLanguageList.add(groupInfo.getFormat(0).language.toString())
-                val displayLanguage =
-                    Locale(groupInfo.getFormat(0).language.toString()).displayLanguage.let {
-                        if (it == "null") "" else it
-                    }
-                var audioTrackText = "${audioTracksList.size + 1}. " + displayLanguage + " (${
-                    if (groupInfo.getFormat(0).label == null) "Dubbed" else groupInfo.getFormat(0).label
-                })"
-
-                if (index > hardAudioMediaSize) {
-                    audioTrackText = "${audioTracksList.size + 1}. " + currentMediaItem.dubbedList[softAudioTrackCounter++].title
-                }
+                val language = groupInfo.getFormat(0).language?.lowercase()
+                val audioTrackText = audioLanguageDictionary[language] ?: language ?: defaultAudio
 
                 val audioTrackIcon = if (group.isSelected) R.drawable.tv_ic_check else 0
                 val audioTrackCheckSupported = group.isSupported
@@ -402,6 +466,7 @@ abstract class TvPlayer(
             adapter = getAlertDialogAdapter(audioTracksList.toTypedArray()),
             itemClickListener = { _, position ->
                 selectAudioTrack(position)
+                interactionListener?.onUserAction(TVUserAction.SELECT_AUDIO)
             },
             positiveClickListener = { self, _ ->
                 self.dismiss()
@@ -411,19 +476,14 @@ abstract class TvPlayer(
         audioTrackDialog.show()
     }
 
-    fun selectSubtitle(position: Int) {
-        val trackGroupList =
-            trackSelector.currentMappedTrackInfo?.getTrackGroups(C.TRACK_TYPE_VIDEO)
-        val trackGroup = trackGroupList?.get(position)
-        trackGroup?.let { safeTrackGroup ->
-            trackSelector.setParameters(
-                trackSelector.buildUponParameters().setOverrideForType(
-                    TrackSelectionOverride(
-                        safeTrackGroup, 0
-                    )
-                ).setRendererDisabled(C.TRACK_TYPE_VIDEO, false)
-            )
-        }
+    fun selectSubtitle(trackGroup: TrackGroup) {
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters().setOverrideForType(
+                TrackSelectionOverride(
+                    trackGroup, 0
+                )
+            ).setRendererDisabled(C.TRACK_TYPE_VIDEO, false)
+        )
     }
 
     fun selectAudioTrack(position: Int) {
@@ -441,24 +501,61 @@ abstract class TvPlayer(
         }
     }
 
-    internal fun showQuality(
+    internal fun showLink(dialogTitle: String, dialogButtonText: String, resIdStyle: Int) {
+        interactionListener?.onUserAction(TVUserAction.SHOW_QUALITY, false)
+
+        val qualityList = currentMediaItem.linkList
+            .filter { it.source == currentMediaItem.currentLink?.source }
+            .map {
+                AlertDialogItemView(
+                    it.title,
+                    if (it.isSelected) R.drawable.tv_ic_check else 0
+                )
+            }
+
+        val qualityDialog = AlertDialogHelper(activity, resIdStyle, dialogTitle)
+        qualityDialog.create(
+            adapter = getAlertDialogAdapter(qualityList.toTypedArray()),
+            itemClickListener = { self, position ->
+                interactionListener?.onUserAction(TVUserAction.SELECT_QUALITY, false)
+                val currentSource = currentMediaItem.currentLink?.source
+                val targetLink =
+                    currentMediaItem.links.filter { it.source == currentSource }[position]
+                val targetIndex = currentMediaItem.links.indexOf(targetLink)
+                if (!currentMediaItem.links[targetIndex].isSelected) changeQuality(targetIndex)
+                else self.dismiss()
+            },
+            positiveButtonText = dialogButtonText,
+            positiveClickListener = { self, _ -> self.dismiss() }
+        )
+        qualityDialog.show()
+    }
+
+    internal fun showSource(
         dialogTitle: String, dialogButtonText: String, resIdStyle: Int
     ) {
-        val qualityList = ArrayList<AlertDialogItemView>()
+        interactionListener?.onUserAction(TVUserAction.SHOW_SOURCE)
 
-        currentMediaItem.qualityList.forEach { mediaQuality ->
+        val qualityList = ArrayList<AlertDialogItemView>()
+        val data = currentMediaItem.linkList.groupBy { it.source }
+        data.forEach { (source, list) ->
+            val isSelected = list.any { it.isSelected }
             qualityList.add(
                 AlertDialogItemView(
-                    mediaQuality.title, if (mediaQuality.isSelected) R.drawable.tv_ic_check else 0
+                    source, if (isSelected) R.drawable.tv_ic_check else 0
                 )
             )
         }
 
         val qualityDialog = AlertDialogHelper(activity, resIdStyle, dialogTitle)
-        qualityDialog.create(adapter = getAlertDialogAdapter(qualityList.toTypedArray()),
+        qualityDialog.create(
+            adapter = getAlertDialogAdapter(qualityList.toTypedArray()),
             itemClickListener = { self, position ->
-                if (!currentMediaItem.qualityList[position].isSelected) changeQuality(position)
-                else self.dismiss()
+                val targetSource = currentMediaItem.links.distinctBy { it.source }[position].source
+                val targetIndex = currentMediaItem.links.indexOfFirst { it.source == targetSource }
+                if (data[targetSource]?.any { it.isSelected } == false) changeQuality(targetIndex)
+                interactionListener?.onUserAction(TVUserAction.SELECT_SOURCE)
+                self.dismiss()
             },
             positiveButtonText = dialogButtonText,
             positiveClickListener = { self, _ ->
@@ -467,7 +564,131 @@ abstract class TvPlayer(
         qualityDialog.show()
     }
 
-    private fun changeQuality(qualitySelectedPosition: Int) {
+    internal fun showQuality(
+        dialogTitle: String,
+        dialogButtonText: String,
+        resIdStyle: Int,
+        autoQualityTitle: String
+    ) {
+        interactionListener?.onUserAction(TVUserAction.SHOW_QUALITY, true)
+
+        val qualitiesList = ArrayList<AlertDialogItemView>()
+
+        var groupIndex = -1
+        var groupInfo: TrackGroup? = null
+        var containAutoQuality = false
+        var isAutoQuality = true
+
+        val currentFormat = player.videoFormat
+
+        player.currentTracks.groups.forEachIndexed { index, group ->
+            if (group.type == C.TRACK_TYPE_VIDEO) {
+                groupInfo = group.mediaTrackGroup
+                groupIndex = index
+                groupInfo?.let { safeGroupInfo ->
+
+                    var selectedQualityCount = 0
+                    if (safeGroupInfo.getFormat(0).width > 0) {
+                        for (i in 0 until safeGroupInfo.length) {
+                            if (group.isTrackSelected(i)) selectedQualityCount++
+                        }
+                        isAutoQuality = selectedQualityCount >= 2
+
+                        for (i in 0 until safeGroupInfo.length) {
+                            val format = safeGroupInfo.getFormat(i)
+                            val qualityValue = min(format.width, format.height)
+                            val quality = "${qualityValue}p"
+                            val qualityIcon =
+                                if (group.isTrackSelected(i) && !isAutoQuality) R.drawable.tv_ic_check else 0
+                            val qualityCheckSupported = group.isTrackSupported(i)
+                            if (qualityCheckSupported)
+                                qualitiesList.add(
+                                    AlertDialogItemView(
+                                        quality,
+                                        qualityIcon,
+                                        true
+                                    )
+                                )
+                        }
+                    } else {
+                        val qualityIcon = R.drawable.tv_ic_check
+                        val qualityCheckSupported = group.isSupported
+
+                        qualitiesList.add(
+                            AlertDialogItemView(
+                                autoQualityTitle,
+                                qualityIcon,
+                                qualityCheckSupported
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+        if (qualitiesList.size > 1) {
+            containAutoQuality = true
+
+            val autoTitle = if (isAutoQuality && currentFormat != null) {
+                val qualityValue = min(currentFormat.width, currentFormat.height)
+                "$autoQualityTitle (${qualityValue}p)"
+            } else {
+                autoQualityTitle
+            }
+
+            qualitiesList.add(
+                0,
+                AlertDialogItemView(
+                    autoTitle,
+                    if (isAutoQuality) R.drawable.tv_ic_check else 0,
+                    true
+                )
+            )
+        }
+
+        if (groupIndex < 0) return
+
+        val dialog = AlertDialogHelper(activity, resIdStyle, dialogTitle)
+        dialog.create(
+            adapter = getAlertDialogAdapter(qualitiesList.toTypedArray()),
+            itemClickListener = { _, position ->
+                if (position == 0 && containAutoQuality) {
+                    trackSelector.setParameters(
+                        trackSelector.buildUponParameters()
+                            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+                            .setRendererDisabled(C.TRACK_TYPE_VIDEO, false)
+                    )
+                } else {
+                    val index = if (containAutoQuality) position - 1 else position
+                    groupInfo?.let { selectStreamQuality(index, it) }
+                }
+                interactionListener?.onUserAction(TVUserAction.SELECT_QUALITY, true)
+            },
+            positiveClickListener = { self, _ ->
+                if (qualitiesList.size > 1) {
+                    trackSelector.setParameters(
+                        trackSelector.buildUponParameters()
+                            .setRendererDisabled(C.TRACK_TYPE_VIDEO, true)
+                    )
+                }
+                self.dismiss()
+            },
+            positiveButtonText = dialogButtonText
+        )
+        dialog.show()
+    }
+
+    fun selectStreamQuality(position: Int, trackGroup: TrackGroup) {
+        trackSelector.setParameters(
+            trackSelector.buildUponParameters().setOverrideForType(
+                TrackSelectionOverride(
+                    trackGroup, position
+                )
+            ).setRendererDisabled(C.TRACK_TYPE_VIDEO, false)
+        )
+    }
+
+    fun changeQuality(qualitySelectedPosition: Int) {
         val currentTime = player.currentPosition
         if (mediaItems.size > 1) changeQualityUriInMediaList(qualitySelectedPosition) else changeQualityUriInItem(
             qualitySelectedPosition
@@ -481,9 +702,11 @@ abstract class TvPlayer(
     }
 
     private fun changeQualityUriInItem(qualitySelectedPosition: Int) {
-        val mediaSource = buildMediaSource(currentMediaItem.changeQualityUriInItem(
-            qualitySelectedPosition
-        ), currentMediaItem.dubbedList)
+        val mediaSource = buildMediaSource(
+            currentMediaItem.changeQualityUriInItem(
+                qualitySelectedPosition
+            ), currentMediaItem.dubbedList
+        )
         player.setMediaSource(mediaSource)
     }
 
@@ -520,6 +743,10 @@ abstract class TvPlayer(
                 return v
             }
         }
+    }
+
+    fun submitUserInteraction(tvUserAction: TVUserAction) {
+        interactionListener?.onUserAction(tvUserAction)
     }
 
     class Builder(

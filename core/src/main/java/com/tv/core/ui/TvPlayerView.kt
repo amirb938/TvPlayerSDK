@@ -1,7 +1,6 @@
 package com.tv.core.ui
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.content.Context
 import android.content.res.TypedArray
 import android.graphics.Color
@@ -23,13 +22,18 @@ import com.airbnb.lottie.model.KeyPath
 import com.google.android.exoplayer2.text.Cue.TEXT_SIZE_TYPE_ABSOLUTE
 import com.google.android.exoplayer2.ui.CaptionStyleCompat
 import com.google.android.exoplayer2.ui.StyledPlayerView
+import com.google.android.exoplayer2.ui.TimeBar
 import com.tv.core.R
 import com.tv.core.base.TvPlayer
 import com.tv.core.util.RecyclerItemClick
+import com.tv.core.util.TVUserAction
 import com.tv.core.util.TvDispatchKeyEvent
 import com.tv.core.util.episodelistdialog.EpisodeListDialogHelper
 import com.tv.core.util.episodelistdialog.EpisodeModel
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
     BaseTvPlayerView(mContext, attrs) {
@@ -38,7 +42,9 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
 
     private var showSubtitleButton: Boolean? = true
     private var showQualityButton: Boolean? = true
-    private var showAudioTrackButton: Boolean? = false
+    private var showLinkButton: Boolean? = true
+    private var showSourceButton: Boolean? = true
+    private var showAudioTrackButton: Boolean? = true
     private var showEpisodeButton: Boolean? = false
     private var showIncreaseSubtitleButton: Boolean? = false
     private var showReduceButton: Boolean? = false
@@ -47,22 +53,44 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
     private var showLiveAnimation: Boolean? = true
 
     private var lottieLiveAnimation: LottieAnimationView? = null
-    private var ibSubtitle: AppCompatImageButton? = null
+    private var ibSource: AppCompatImageButton? = null
+    private var ibLink: AppCompatImageButton? = null
     private var ibQuality: AppCompatImageButton? = null
     private var ibAudioTack: AppCompatImageButton? = null
+    private var ibSubtitle: AppCompatImageButton? = null
     private var ibEpisodeList: AppCompatImageButton? = null
     private var ibIncreaseSubtitle: AppCompatImageButton? = null
     private var ibReduceSubtitle: AppCompatImageButton? = null
+    private var exoNext: AppCompatImageButton? = null
+    private var exoPrev: AppCompatImageButton? = null
+    private var exoPlayPause: AppCompatImageButton? = null
+    private var exoForward: AppCompatImageButton? = null
+    private var exoRewind: AppCompatImageButton? = null
+    private var exoProgress: TvDefaultTimeBar? = null
 
+    private var sourceDialogTitle = "Select source"
+    private var sourceDialogButtonText = "Close"
     private var subtitleDialogTitle = "Select subtitle"
     private var subtitleDialogButtonText = "Off subtitle"
+    private var linkDialogTitle = "Select quality"
+    private var linkDialogButtonText = "Close"
     private var qualityDialogTitle = "Select quality"
     private var qualityDialogButtonText = "Close"
+    private var qualityDialogItemDefault = "Auto"
     private var audioTrackDialogTitle = "Select dubbed"
     private var audioTrackDialogButtonText = "Close"
     private var subtitleDialogResIdStyle = R.style.defaultAlertDialogStyle
     private var qualityDialogResIdStyle = R.style.defaultAlertDialogStyle
     private var audioTrackDialogResIdStyle = R.style.defaultAlertDialogStyle
+    private var sourceDialogResIdStyle = R.style.defaultAlertDialogStyle
+    private var linkDialogResIdStyle = R.style.defaultAlertDialogStyle
+
+    private var subtitleLanguageDictionary =
+        mapOf("fa" to "فارسی", "en" to "انگلیسی", "eng" to "انگلیسی")
+    private var audioLanguageDictionary = subtitleLanguageDictionary
+    private var defaultSubtitle = "زیرنویس"
+    private var defaultAudio = "صدا"
+    private var defaultAutoQualityTitle = "خودکار"
 
     private lateinit var iranSansTypeFace: Typeface
 
@@ -98,14 +126,21 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         var typedArray: TypedArray? = null
         try {
             typedArray = context.obtainStyledAttributes(attrs, R.styleable.TvPlayerView)
-            showSubtitleButton =
-                typedArray.getBoolean(R.styleable.TvPlayerView_show_subtitle_button, true)
+
+//            showSourceButton =
+//                typedArray.getBoolean(R.styleable.TvPlayerView_show_source_button, true)
+//
+//            showLinkButton =
+//                typedArray.getBoolean(R.styleable.TvPlayerView_show_link_button, true)
 
             showQualityButton =
                 typedArray.getBoolean(R.styleable.TvPlayerView_show_quality_button, true)
 
             showAudioTrackButton =
-                typedArray.getBoolean(R.styleable.TvPlayerView_show_dubbed_button, false)
+                typedArray.getBoolean(R.styleable.TvPlayerView_show_dubbed_button, true)
+
+            showSubtitleButton =
+                typedArray.getBoolean(R.styleable.TvPlayerView_show_subtitle_button, true)
 
             showEpisodeButton =
                 typedArray.getBoolean(R.styleable.TvPlayerView_show_episode_button, false)
@@ -130,16 +165,24 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         }
     }
 
+    fun sourceButtonVisibility(isVisible: Boolean) {
+        ibSource?.visibility = if (isVisible) View.VISIBLE else View.GONE
+    }
+
+    fun linkButtonVisibility(isVisible: Boolean) {
+        ibLink?.visibility = if (isVisible) View.VISIBLE else View.GONE
+    }
+
     fun qualityButtonVisibility(isVisible: Boolean) {
         ibQuality?.visibility = if (isVisible) View.VISIBLE else View.GONE
     }
 
-    fun subtitleButtonVisibility(isVisible: Boolean) {
-        ibSubtitle?.visibility = if (isVisible) View.VISIBLE else View.GONE
-    }
-
     fun audioTrackButtonVisibility(isVisible: Boolean) {
         ibAudioTack?.visibility = if (isVisible) View.VISIBLE else View.INVISIBLE
+    }
+
+    fun subtitleButtonVisibility(isVisible: Boolean) {
+        ibSubtitle?.visibility = if (isVisible) View.VISIBLE else View.GONE
     }
 
     fun episodeButtonVisibility(isVisible: Boolean) {
@@ -159,9 +202,11 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
     }
 
     override fun findViews() {
-        ibSubtitle = findViewById(R.id.ib_subtitles)
-        ibQuality = findViewById(R.id.ib_qualities)
+        ibSource = findViewById(R.id.ib_source)
+        ibLink = findViewById(R.id.ib_links)
+        ibQuality = findViewById(R.id.ib_quality)
         ibAudioTack = findViewById(R.id.ib_audioTrack)
+        ibSubtitle = findViewById(R.id.ib_subtitles)
         ibEpisodeList = findViewById(R.id.ib_episodeList)
         ibIncreaseSubtitle = findViewById(R.id.ib_increaseSubtitle)
         ibReduceSubtitle = findViewById(R.id.ib_reduceSubtitle)
@@ -173,6 +218,12 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         llParentRewindAnimation = findViewById(R.id.ll_parentRewindAnimation)
         llParentFastForwardAnimation = findViewById(R.id.ll_parentFastForwardAnimation)
         llParentVideoState = findViewById(R.id.ll_parentVideoState)
+        exoNext = findViewById(R.id.exo_next1)
+        exoPrev = findViewById(R.id.exo_prev1)
+        exoPlayPause = findViewById(R.id.exo_play_pause)
+        exoForward = findViewById(R.id.exo_ffwd)
+        exoRewind = findViewById(R.id.exo_rew)
+        exoProgress = findViewById(R.id.exo_progress)
     }
 
     override fun updateUi() {
@@ -184,7 +235,9 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         changePlayerTextTypeFace(iranSansTypeFace)
         subtitleButtonVisibility(showSubtitleButton ?: true)
         qualityButtonVisibility(showQualityButton ?: true)
-        audioTrackButtonVisibility(showAudioTrackButton ?: false)
+        linkButtonVisibility(showLinkButton ?: true)
+        sourceButtonVisibility(showSourceButton ?: true)
+        audioTrackButtonVisibility(showAudioTrackButton ?: true)
         episodeButtonVisibility(showEpisodeButton ?: false)
         increaseSubtitleButtonVisibility(showIncreaseSubtitleButton ?: true)
         reduceSubtitleButtonVisibility(showReduceButton ?: true)
@@ -255,47 +308,100 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         findViewById<AppCompatTextView>(R.id.exo_position).typeface = typeface
     }
 
+    override fun updateNextButtonState(hasNext: Boolean) {
+        exoNext?.isFocusable = hasNext
+        exoNext?.isClickable = hasNext
+        exoNext?.alpha = if (hasNext) 1f else 0.3f
+    }
+
     override fun setupElement(playerHandler: TvPlayer, isLive: Boolean) {
         this.playerHandler = playerHandler
         setupPlayerView(if (isLive) R.id.default_live_player_view else R.id.default_player_view)
-
-        ibSubtitle?.setOnClickListener {
-            playerHandler.showSubtitle(
-                dialogTitle = subtitleDialogTitle,
-                dialogButtonText = subtitleDialogButtonText,
-                resIdStyle = subtitleDialogResIdStyle
+        ibSource?.setOnClickListener {
+            playerHandler.showSource(
+                dialogTitle = sourceDialogTitle,
+                dialogButtonText = sourceDialogButtonText,
+                resIdStyle = sourceDialogResIdStyle
+            )
+        }
+        ibLink?.setOnClickListener {
+            playerHandler.showLink(
+                dialogTitle = linkDialogTitle,
+                dialogButtonText = linkDialogButtonText,
+                resIdStyle = linkDialogResIdStyle
             )
         }
         ibQuality?.setOnClickListener {
             playerHandler.showQuality(
                 dialogTitle = qualityDialogTitle,
                 dialogButtonText = qualityDialogButtonText,
-                resIdStyle = qualityDialogResIdStyle
+                resIdStyle = qualityDialogResIdStyle,
+                autoQualityTitle = defaultAutoQualityTitle
             )
         }
         ibAudioTack?.setOnClickListener {
             playerHandler.showAudioTrack(
                 dialogTitle = audioTrackDialogTitle,
                 dialogButtonText = audioTrackDialogButtonText,
-                resIdStyle = audioTrackDialogResIdStyle
+                resIdStyle = audioTrackDialogResIdStyle,
+                audioLanguageDictionary = audioLanguageDictionary,
+                defaultAudio = defaultAudio
+            )
+        }
+        ibSubtitle?.setOnClickListener {
+            playerHandler.showSubtitle(
+                dialogTitle = subtitleDialogTitle,
+                dialogButtonText = subtitleDialogButtonText,
+                resIdStyle = subtitleDialogResIdStyle,
+                subtitleLanguageDictionary = subtitleLanguageDictionary
             )
         }
         ibEpisodeList?.setOnClickListener {
             episodeListDialog.setEpisodeList(playerHandler.mediaItems).show()
+            playerHandler.submitUserInteraction(TVUserAction.SHOW_EPISODE)
         }
         ibIncreaseSubtitle?.setOnClickListener {
             increaseSubtitle()
+            playerHandler.submitUserInteraction(TVUserAction.INCREASE_SUBTITLE)
         }
         ibReduceSubtitle?.setOnClickListener {
             reduceSubtitle()
+            playerHandler.submitUserInteraction(TVUserAction.REDUCE_SUBTITLE)
         }
         episodeListDialog.setOnEpisodeClickListener(object : RecyclerItemClick {
             override fun onItemClickListener(episodeModel: EpisodeModel, position: Int) {
                 if (playerHandler.player.currentMediaItemIndex != position)
                     playerHandler.changeMedia(position, episodeModel.startPosition)
+                playerHandler.submitUserInteraction(TVUserAction.SELECT_EPISODE)
                 episodeListDialog.dismiss()
             }
         })
+        exoNext?.setOnClickListener {
+            playerHandler.submitUserInteraction(TVUserAction.NEXT_MEDIA)
+            playerHandler.player.seekToNext()
+        }
+        exoPrev?.setOnClickListener {
+            playerHandler.submitUserInteraction(TVUserAction.PREV_MEDIA)
+            playerHandler.player.seekToPrevious()
+        }
+        exoPlayPause?.setOnClickListener {
+            if (playerHandler.player.playWhenReady) {
+                playerHandler.player.pause()
+                playerHandler.submitUserInteraction(TVUserAction.PLAY_MEDIA)
+            } else {
+                playerHandler.player.play()
+                playerHandler.submitUserInteraction(TVUserAction.PAUSE_MEDIA)
+            }
+        }
+        exoForward?.setOnClickListener {
+            playerHandler.player.seekForward()
+            playerHandler.submitUserInteraction(TVUserAction.FORWARD_MEDIA)
+        }
+        exoRewind?.setOnClickListener {
+            playerHandler.player.seekBack()
+            playerHandler.submitUserInteraction(TVUserAction.REWIND_MEDIA)
+        }
+        exoProgress?.addListener(onScrubListener)
 
         if (isLive) {
             findViewById<StyledPlayerView>(R.id.default_player_view).visibility = View.INVISIBLE
@@ -308,22 +414,36 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         }
     }
 
-    override fun changeSubtitleState(isThereSubtitle: Boolean) {
-        isThereSubtitle.apply {
-            ibSubtitle?.isFocusable  = this
-            ibSubtitle?.isFocusableInTouchMode = this
-            ibSubtitle?.isClickable = this
-            ibSubtitle?.alpha = if (this) 1F else .3F
+    private val onScrubListener = object : TimeBar.OnScrubListener {
+        override fun onScrubStart(timeBar: TimeBar, position: Long) {
+        }
 
-            ibIncreaseSubtitle?.isFocusable  = this
-            ibIncreaseSubtitle?.isFocusableInTouchMode = this
-            ibIncreaseSubtitle?.isClickable = this
-            ibIncreaseSubtitle?.alpha = if (this) 1F else .3F
+        override fun onScrubMove(timeBar: TimeBar, position: Long) {
+        }
 
-            ibReduceSubtitle?.isFocusable  = this
-            ibReduceSubtitle?.isFocusableInTouchMode = this
-            ibReduceSubtitle?.isClickable = this
-            ibReduceSubtitle?.alpha = if (this) 1F else .3F
+        override fun onScrubStop(timeBar: TimeBar, position: Long, canceled: Boolean) {
+            playerHandler.player.seekTo(position)
+            playerHandler.submitUserInteraction(TVUserAction.SCRUB_MEDIA)
+        }
+    }
+
+    override fun changeSourceState(isThereSource: Boolean) {
+        isThereSource.apply {
+            ibSource?.isFocusable = this
+            ibSource?.isFocusableInTouchMode = this
+            ibSource?.isClickable = this
+            ibSource?.alpha = if (this) 1F else .3F
+            ibSource?.visibility = if (this) View.VISIBLE else View.GONE
+        }
+    }
+
+    override fun changeLinkState(isThereLinks: Boolean) {
+        isThereLinks.apply {
+            ibLink?.isFocusable = this
+            ibLink?.isFocusableInTouchMode = this
+            ibLink?.isClickable = this
+            ibLink?.alpha = if (this) 1F else .3F
+            ibLink?.visibility = if (this) View.VISIBLE else View.GONE
         }
     }
 
@@ -333,16 +453,39 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
             ibQuality?.isFocusableInTouchMode = this
             ibQuality?.isClickable = this
             ibQuality?.alpha = if (this) 1F else .3F
+            ibQuality?.visibility = if (this) View.VISIBLE else View.GONE
         }
     }
 
     override fun changeAudioTrackState(isThereDubbed: Boolean) {
-        super.changeAudioTrackState(isThereDubbed)
         isThereDubbed.apply {
             ibAudioTack?.isFocusable = this
             ibAudioTack?.isFocusableInTouchMode = this
             ibAudioTack?.isClickable = this
             ibAudioTack?.alpha = if (this) 1F else .3F
+            ibAudioTack?.visibility = if (this) View.VISIBLE else View.GONE
+        }
+    }
+
+    override fun changeSubtitleState(isThereSubtitle: Boolean) {
+        isThereSubtitle.apply {
+            ibSubtitle?.isFocusable = this
+            ibSubtitle?.isFocusableInTouchMode = this
+            ibSubtitle?.isClickable = this
+            ibSubtitle?.alpha = if (this) 1F else .3F
+            ibSubtitle?.visibility = if (this) View.VISIBLE else View.GONE
+
+            ibIncreaseSubtitle?.isFocusable = this
+            ibIncreaseSubtitle?.isFocusableInTouchMode = this
+            ibIncreaseSubtitle?.isClickable = this
+            ibIncreaseSubtitle?.alpha = if (this) 1F else .3F
+            ibIncreaseSubtitle?.visibility = if (this) View.VISIBLE else View.GONE
+
+            ibReduceSubtitle?.isFocusable = this
+            ibReduceSubtitle?.isFocusableInTouchMode = this
+            ibReduceSubtitle?.isClickable = this
+            ibReduceSubtitle?.alpha = if (this) 1F else .3F
+            ibReduceSubtitle?.visibility = if (this) View.VISIBLE else View.GONE
         }
     }
 
@@ -351,25 +494,41 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
         episodeButtonVisibility((showEpisodeButton == true) && isThereEpisodeMediaItems)
     }
 
-    fun changeSubtitleDialogTexts(title: String = "Select quality", buttonText: String = "Close") {
+    fun changeSourceDialogTexts(title: String = "Select Source", buttonText: String = "Close") {
+        this.sourceDialogTitle = title
+        this.sourceDialogButtonText = buttonText
+    }
+
+    fun changeSubtitleDialogTexts(
+        title: String = "Select quality",
+        buttonText: String = "Close",
+        subtitleLanguageDictionary: Map<String, String>? = null
+    ) {
         this.subtitleDialogTitle = title
         this.subtitleDialogButtonText = buttonText
+        subtitleLanguageDictionary?.let { this.subtitleLanguageDictionary = it }
     }
 
     fun changeQualityDialogTexts(
         title: String = "Select subtitle",
-        buttonText: String = "Off subtitle"
+        buttonText: String = "Off subtitle",
+        qualityDialogItemDefault: String = "Auto"
     ) {
         this.qualityDialogTitle = title
         this.qualityDialogButtonText = buttonText
+        this.linkDialogTitle = title
+        this.linkDialogButtonText = buttonText
+        this.qualityDialogItemDefault = qualityDialogItemDefault
     }
 
     fun changeDubbedDialogTexts(
         title: String = "Select dubbed",
-        buttonText: String = "Close"
+        buttonText: String = "Close",
+        audioLanguageDictionary: Map<String, String>? = null
     ) {
         this.audioTrackDialogTitle = title
         this.audioTrackDialogButtonText = buttonText
+        audioLanguageDictionary?.let { this.audioLanguageDictionary = it }
     }
 
     fun setSubtitleDialogStyle(resId: Int) {
@@ -397,23 +556,25 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
                         tvDispatcherListener?.onLeftClick()
                         if (decrementLongPressJob == null) {
                             decrementLongPressValidation = true
-                            decrementLongPressJob = activity.lifecycleScope.launch(Dispatchers.Main) {
-                                llParentRewindAnimation.visibility = View.VISIBLE
-                                llParentVideoState.visibility = View.VISIBLE
+                            decrementLongPressJob =
+                                activity.lifecycleScope.launch(Dispatchers.Main) {
+                                    llParentRewindAnimation.visibility = View.VISIBLE
+                                    llParentVideoState.visibility = View.VISIBLE
 
-                                setDecrementLabelText(decrementCounter.toString())
-
-                                delay(80)
-
-                                if (decrementLongPressValidation) {
                                     setDecrementLabelText(decrementCounter.toString())
 
-                                    decrementCounter += 10
-                                    tvPositionKeyControl.text =
-                                        playerHandler.getPositionString(playerHandler.getCurrentPosition() - (decrementCounter * 1_000))
+                                    delay(80)
+
+                                    if (decrementLongPressValidation) {
+                                        setDecrementLabelText(decrementCounter.toString())
+
+                                        decrementCounter += 10
+                                        tvPositionKeyControl.text =
+                                            playerHandler.getPositionString(playerHandler.getCurrentPosition() - (decrementCounter * 1_000))
+                                        playerHandler.submitUserInteraction(TVUserAction.FAST_DECREMENT_COUNTER)
+                                    }
+                                    decrementLongPressJob = null
                                 }
-                                decrementLongPressJob = null
-                            }
                         }
                     }
 
@@ -421,23 +582,25 @@ class TvPlayerView(private val mContext: Context, attrs: AttributeSet?) :
                         tvDispatcherListener?.onRightClick()
                         if (incrementLongPressJob == null) {
                             incrementLongPressValidation = true
-                            incrementLongPressJob = activity.lifecycleScope.launch(Dispatchers.Main) {
-                                llParentFastForwardAnimation.visibility = View.VISIBLE
-                                llParentVideoState.visibility = View.VISIBLE
+                            incrementLongPressJob =
+                                activity.lifecycleScope.launch(Dispatchers.Main) {
+                                    llParentFastForwardAnimation.visibility = View.VISIBLE
+                                    llParentVideoState.visibility = View.VISIBLE
 
-                                setIncrementLabelText(incrementCounter.toString())
-
-                                delay(80)
-
-                                if (incrementLongPressValidation) {
                                     setIncrementLabelText(incrementCounter.toString())
 
-                                    incrementCounter += 10
-                                    tvPositionKeyControl.text =
-                                        playerHandler.getPositionString(playerHandler.getCurrentPosition() + (incrementCounter * 1_000))
+                                    delay(80)
+
+                                    if (incrementLongPressValidation) {
+                                        setIncrementLabelText(incrementCounter.toString())
+
+                                        incrementCounter += 10
+                                        tvPositionKeyControl.text =
+                                            playerHandler.getPositionString(playerHandler.getCurrentPosition() + (incrementCounter * 1_000))
+                                        playerHandler.submitUserInteraction(TVUserAction.FAST_INCREMENT_COUNTER)
+                                    }
+                                    incrementLongPressJob = null
                                 }
-                                incrementLongPressJob = null
-                            }
                         }
                     }
 

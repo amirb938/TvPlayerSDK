@@ -165,4 +165,18 @@
         <item name="android:fontFamily">@font/iran_yekan_demi_bold</item>
     </style>
 
+    <style name="TvButtonLink" parent="ExoStyledControls.Button.Bottom.CC">
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:focusableInTouchMode">true</item>
+        <item name="android:src">@drawable/tv_ic_link</item>
+        <item name="android:background">@drawable/tv_selector_controller_button</item>
+    </style>
+    <style name="TvButtonSource" parent="ExoStyledControls.Button.Bottom.CC">
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:focusableInTouchMode">true</item>
+        <item name="android:src">@drawable/tv_ic_source</item>
+        <item name="android:background">@drawable/tv_selector_controller_button</item>
+    </style>
 </resources>

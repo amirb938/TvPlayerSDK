@@ -6,10 +6,13 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.AppCompatTextView
 import com.tv.core.base.TvPlayer
-import com.tv.core.util.*
+import com.tv.core.util.AdvertisePlayerListener
+import com.tv.core.util.TvPlayBackException
+import com.tv.core.util.TvPlayerListener
 import com.tv.core.util.mediaItems.AdvertiseItem
 import com.tv.core.util.mediaItems.MediaItem
-import com.tv.core.util.mediaItems.MediaQuality
+import com.tv.core.util.mediaItems.MediaItemParent
+import com.tv.core.util.mediaItems.MediaLink
 import com.tv.player.databinding.ActivityAdvertisePlayerBinding
 import com.tv.player.util.UrlHelper
 
@@ -34,7 +37,7 @@ class AdvertisePlayerActivity : AppCompatActivity() {
 
         val adMedia = AdvertiseItem(url = UrlHelper.ad)
 
-        val media = MediaItem(qualities = listOf(MediaQuality(link = UrlHelper.film720)))
+        val media = MediaItem(links = listOf(MediaLink(link = UrlHelper.film720)))
 
         playerHandler.addMediaAdvertise(adMedia)
         playerHandler.addMedia(media)
@@ -52,8 +55,12 @@ class AdvertisePlayerActivity : AppCompatActivity() {
             binding.isLoading = playbackState == TvPlayer.STATE_BUFFERING
         }
 
-        override fun onPlayerError(error: TvPlayBackException) {
-            super.onPlayerError(error)
+        override fun onPlayerError(
+            error: TvPlayBackException,
+            currentMediaItem: MediaItemParent,
+            currentMediaItemIndex: Int
+        ) {
+            super.onPlayerError(error, currentMediaItem, currentMediaItemIndex)
             error.printStackTrace()
         }
 
@@ -73,8 +80,12 @@ class AdvertisePlayerActivity : AppCompatActivity() {
     }
 
     private val playerListener = object : TvPlayerListener {
-        override fun onPlayerError(error: TvPlayBackException) {
-            super.onPlayerError(error)
+        override fun onPlayerError(
+            error: TvPlayBackException,
+            currentMediaItem: MediaItemParent,
+            currentMediaItemIndex: Int
+        ) {
+            super.onPlayerError(error, currentMediaItem, currentMediaItemIndex)
             error.printStackTrace()
         }
 

@@ -31,11 +31,11 @@ object UrlHelper {
         "https://sub.papkorndl.com/10298810/Lightyear.2022.WEB.Fa%5BANSI%5D.srt"
 
     const val film480 =
-        "http://dl.gemescape.com/film/2022/Lightyear/BluRay/Lightyear.2022.480p.BluRay.x264.Pahe.SoftSub.PK.mkv"
+        "https://dls7.iran-gamecenter-host.com/DonyayeSerial/movies/2010/tt1375666/SoftSub/Inception.2010.720p.BluRay.SoftSub.MkvCage.DonyayeSerial.mkv"
     const val film720 =
-        "http://dl.gemescape.com/film/2022/Lightyear/BluRay/Lightyear.2022.720p.BluRay.x264.6CH.Pahe.SoftSub.PK.mkv"
+        "https://dls7.iran-gamecenter-host.com/DonyayeSerial/movies/2010/tt1375666/SoftSub/Inception.2010.720p.BluRay.SoftSub.MkvCage.DonyayeSerial.mkv"
     const val film1080 =
-        "http://dl.gemescape.com/film/2022/Lightyear/BluRay/Lightyear.2022.1080p.BluRay.x265.10Bit.DD%2B7.1.Pahe.SoftSub.PK.mkv"
+        "https://dls7.iran-gamecenter-host.com/DonyayeSerial/movies/2010/tt1375666/SoftSub/Inception.2010.720p.BluRay.SoftSub.MkvCage.DonyayeSerial.mkv"
 
     const val SAMPLE_VAST_TAG_URL =
         "https://pubads.g.doubleclick.net/gampad/ads?iu=/21775744923/external/single_ad_samples&sz=640x480&cust_params=sample_ct%3Dlinear&ciu_szs=300x250%2C728x90&gdfp_req=1&output=vast&unviewed_position_start=1&env=vp&impl=s&correlator="
